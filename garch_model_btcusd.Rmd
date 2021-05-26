@@ -10,6 +10,13 @@ source('libraries.R')
 #Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 ```
 
+
+## Abstract
+
+The phenomenon of speculation is known in the microstructure of the financial markets as noise trading. Also, it is known that bad as good news impacts on the price of the currency, so the volatility usually is higher. After studying the bitcoin timeline we can observe that news about the performance of blockchain and the reliability of bitcoin as commodity or payment method affect the volatility of the crypto currency through the time. GARCH models estimate the conditional variance which depends on the history of returns and a variant of these models is GJR-GARCH which predicts the variance after a positive or negative surprise. This work presents the evidence that a model like GJR-GARCH with heavier tails have a better performance than the tradicional GARCH normal distribution to predict the volatility of BTCUSD. 
+
+## Methodology
+
 ### Data Analysis
 
 The objective of this work is to analyze the volatility of BTCUSD. I download the daily prices from [TradingView](https://www.tradingview.com) provided by [Coinbase](https://www.coinbase.com). The minimum date available in this platform was  2015-01-13 so the period of analysis is from 1st January 2015 to 31 December 2020, therefore the total of observations were 2177. 
