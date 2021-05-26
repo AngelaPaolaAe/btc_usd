@@ -1,0 +1,370 @@
+---
+title: "GARCH MODEL BTCUSD"
+author: "Angela Arceo"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source('libraries.R')
+#Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```
+
+### Data Analysis
+
+The objective of this work is to analyze the volatility of BTCUSD. I download the daily prices from [TradingView](https://www.tradingview.com) provided by [Coinbase](https://www.coinbase.com). The minimum date available in this platform was  2015-01-13 so the period of analysis is from 1st January 2015 to 31 December 2020, therefore the total of observations were 2177. 
+
+
+```{r extract_data }
+btc<-read_csv('BTCUSD_1D_122020.csv')
+
+btc%<>%
+  filter(between(time,date('2015-01-13'),date('2020-12-31')))
+
+btc_plot<-timetk::tk_xts(btc%>%select(-`Volume MA`))
+
+quantmod::chartSeries(btc_plot,
+          theme=chartTheme('white'))
+          
+```
+
+
+The returns were calculated as the log difference of the close prices. In order to corroborate if the returns are stationary two tests were applied: Dickey-Fuller and KPSS. Dicker-Fuller test for the null hypothesis that returns has a unit root. The result of the test provided evidence that we can reject the null hypothesis with at least 1% of significance level that the returns don't have unit root. 
+
+
+```{r log_returns}
+ btc_lr<-btc%>%
+        filter(time > date('2015-01-13'))%>%
+        select(time, close)%>%
+        mutate(r = (log(close) - log(lag(close))))%>%
+        filter(!is.na(r))
+
+   tseries::adf.test(btc_lr$r) 
+```
+
+KPSS reverses the null and alternative hypothesis, the returns are stationary against the alternative that the process is integrated of order one. The result of the test provided evidence that we can't reject the null hypothesis with at least  10%  of significance level that the returns are stationary.
+
+```{r kpss_test}
+   tseries::kpss.test(btc_lr$r)
+```
+
+
+In addition to statistical test, financial literature mentions that it is a stylized fact that the returns time series present a heavy tails that is a leptokurtic distribution. We can observe that when the empirical density of BTCUSD log returns is plotted. Also, we can prove that the log returns aren't normally distributed through the Jarque-Bera test where it demonstrates that p-value is close to 0 therefore there is evidence that rejects the null hypothesis. 
+
+```{r density}
+plot(density(btc_lr$r),main='Empirical Density Log Returns BTCUSD')
+tseries::jarque.bera.test(btc_lr$r)
+```
+
+
+After the examination of distribution, we can observe that the log returns have been periods of high volatility. The figure below shows the estimated ACF in which the red bands represent the correlation for white noise and the blue ones represent confidence intervals for asymptotic bands proposed by Francq and Zakoïan (2009). The estimated ACF for the log returns are outside of both bands at lag 10. Also, Ljung-Box test was computed to analyze the null hypothesis of independence in log returns which present evidence that the log returns are independent in order four at least 1% of significance level.
+
+```{r}
+garch_examine(btc_lr$r,"series")
+Box.test(btc_lr$r,lag=14,type="Ljung-Box")
+```
+
+
+The ARCH Engle’s test is constructed based on the fact that if the residuals are heteroscedastic, the squared residuals are autocorrelated. In order to analyze ARCH effects an ARMA model was fitted to analyze the residuals. The approach to determine the order of the ARMA model was analyzing PACF to AR(p) and ACF for MA(q). 
+
+```{r arma, echo=FALSE}
+par(mfrow = c(1, 2))
+TSA::acf(btc_lr$r, 24)
+pacf(btc_lr$r, 24) 
+
+```
+
+The result of the model was: 
+$$
+ x= -0.0618*x_{t-1} + 0.0179x_{t-2} + 0.0394x_{t-3}  -0.0006x_{t-4} + 0.0025
+$$
+
+We can observe the empirical distribution and de qqplot of residuals and these ones were not white noise. In addition to the visualizations, the Portmanteau test was performed to test the null hypothesis that the residuals of an ARIMA model are homoscedastic. The test provided evidence at 2.46% significance level and order 16 that the residuals were heteroscedastic.
+
+```{r}
+Model.Arima=Arima(btc_lr$r,c(4,0,0))
+checkresiduals(Model.Arima)
+
+residuals<-as.vector(Model.Arima$residuals)
+EnvStats::qqPlot(residuals, add.line = TRUE)
+```
+
+The evidence of ARCH effects in residuals and leptokurtic distribution in log returns suggest that we can fit a GARCH model for the returns of BTCUSD. 
+
+### Volatily Model
+
+The volatility of financial asset returns changes over time, with periods when volatility is exceptionally high alternated with periods when volatility is unusually low. The volatility clustering will be easier to identify in intraday data and the generalized autoregressive conditional heteroscedasticity (GARCH) models were designed to capture this phenomenon. Also, GARCH models estimate the conditional variance which depends on the history of returns.
+The simple ARMA(p,q)-GARCH(m,r) model is:
+
+$$
+Y_t-\mu=  \sum_{h = 1}^{p} \phi_h(Y_{t-h}-\mu) + \sum_{l = 1}^{q} \theta_t V_{t-1}+V_t,     V_t=\sigma_t\epsilon_t
+$$
+$$
+\sigma^2=\omega + \sum_{i = 1}^{m}\alpha_i*V^2_{t-i}+\sum_{j = 1}^{r}\beta_j*\sigma^2_{t-j}
+$$
+Frequently we assume a normal distribution to analyze returns but we previously observed that the log returns have heavy tails. Therefore, we alternated normal distributions, student-t (STD) and generalized (GED) distributions to analyze what is the best fitting for the models. 
+
+We observed in the figure below that BTCUSD has been influenced by news about hacks, globally economic, governments acceptance or investor feelings. Also, it is known that news impacts on the volatility of the cryptocurrency as we can see in the below image.The standard GARCH model does not distinguish between positive and negative prediction errors. In reality, the sign of the prediction error matters. The model GJR GARCH consider an adicional parameter gamma to describe the variance reaction after a negative shock in the returns. 
+
+
+![](history_BTCUSD.png)
+
+
+The package *rugarch* was used to fit the GARCH models. The statistical significance of  coefficients were tested to evaluate if all the model variables were relevant.Also, we evaluated if the squared residuals autocorrelation were captured by the models through Ljung-Box test. The test provided evidence that the p-value is less than 1% of significance level when the ARMA process wasn’t included in the model and a heavy tail distribution was used (see Table 3.)
+
+```{r arma_garch}
+
+#ARMA-GARCH norm ------------------------------------------------------
+btc_lr_m<-btc_lr$r
+means= list(list(armaOrder = c(1, 0), include.mean=TRUE),
+           list(armaOrder = c(0, 0), include.mean=TRUE))
+
+varianza=list(model = "sGARCH", garchOrder = c(1, 1))
+
+
+specs<-lapply(means,function(m) ugarchspec(varianza,m,distribution.model = "norm"))
+fits<-lapply(specs,function(spec) ugarchfit(spec,btc_lr_m))
+
+# ARMA-GARCH-STD-GED ------------------------------------------------------
+mean0= list(armaOrder = c(0, 0), include.mean=TRUE)
+var1=list(model = "sGARCH", garchOrder = c(1, 1))
+dist<-c("std","ged")
+
+specs_d<-lapply(dist,function(d) ugarchspec(var1,mean0,distribution.model = d,fixed.pars=list(omega=0)))
+fit_d<-lapply(specs_d,function(spec) ugarchfit(spec,btc_lr_m))
+
+# GJR-GARCH-STD-GED ------------------------------------------------------
+mean0= list(armaOrder = c(0, 0), include.mean=TRUE)
+var2=list(model = "gjrGARCH", garchOrder = c(1, 1))
+dist<-c("std","ged")
+
+specs_d_gjr<-lapply(dist,function(d) ugarchspec(var2,mean0,distribution.model = d,fixed.pars=list(omega=0)))
+fit_d_gjr<-lapply(specs_d_gjr,function(spec) ugarchfit(spec,btc_lr_m))
+
+```
+
+We can observe in Table 1 that the parameter of ARMA(1,0) was not significantly relevant at 5% of significance level and the coefficient *omega* is close to zero but it was significant so it could be omitted for parsimony principle as result the other parameters weren't affected (Table 2). 
+
+```{r coefs}
+### Coef
+table1<-as.matrix(fits[[1]]@fit$matcoef)
+table2<-as.matrix(fits[[2]]@fit$matcoef)
+
+kable(table1,caption = "ARMA(1,0)-GARCH(1,1) norm")%>%
+  kable_styling(full_width = F, font_size = 8)
+kable(table2,caption = "ARMA(0,0)-GARCH(1,1) norm")%>%
+  kable_styling(full_width = F, font_size = 8)
+
+```
+
+
+On the other hand, if we analyze the distribution of the residuals , it still presents heavy tails but squared residuals weren't autocorrelated. The order of the GARCH(1,1) was well specified. However, two more models were fitted with distributions like t-student (std) and generalized error distribution (ged) that have heavier tails. Additionally, GJR-GARCH(1,1) model was fitted in order to capture the highest shocks in consequence of the news that provokes high volatility. 
+
+```{r qqplots and residuals}
+
+sqr_f1<-as.numeric((fits[[1]]@fit$residuals)^2)
+sqr_f2<-as.numeric((fits[[2]]@fit$residuals)^2)
+sqr_f1_d<-as.numeric((fit_d[[1]]@fit$residuals)^2)
+sqr_f2_d<-as.numeric((fit_d[[2]]@fit$residuals)^2)
+sqr_f1_gjr<-as.numeric((fit_d_gjr[[1]]@fit$residuals)^2)
+sqr_f2_gjr<-as.numeric((fit_d_gjr[[2]]@fit$residuals)^2)
+
+auto_corr_sr_pvalues<-matrix(c(Box.test(sqr_f1,type="Ljung-Box")$p.value,
+Box.test(sqr_f2,type="Ljung-Box")$p.value,
+Box.test(sqr_f1_d,type="Ljung-Box")$p.value,
+Box.test(sqr_f2_d,type="Ljung-Box")$p.value,
+Box.test(sqr_f1_gjr,type="Ljung-Box")$p.value,
+Box.test(sqr_f2_gjr,type="Ljung-Box")$p.value
+),
+dimnames=list(c("ARMA(1,0)-GARCH(1,1) norm",
+       "ARMA(0,0)-GARCH(1,1) norm",
+       "ARMA(0,0)-GARCH(1,1) std",
+       "ARMA(0,0)-GARCH(1,1) ged",
+       "ARMA(0,0)-GJR-GARCH(1,1) std",
+       "ARMA(0,0)-GJR-GARCH(1,1) ged"),
+     c("p-value")
+     
+))
+
+kable(auto_corr_sr_pvalues,caption='Squared Residuals Autocorrelation')%>%
+  kable_styling()
+
+```
+
+The previous table presented evidence that the order of models were well specified especially when the ARMA process wasn't included. However, the p-values that are minor than 1% and very close between them just like MSE (see annex 3) so these metrics wasn't useful to specify the model with the best performance. The quality of the GARCH prediction was evaluated through the likelihood of the returns that uses densities to measure how likely it is that the observed returns come from the estimated GARCH model, greater is this value is better. 
+
+```{r likelihood}
+
+l1<-sapply(fits,rugarch::likelihood)
+l2<-sapply(fit_d,rugarch::likelihood)
+l3<-sapply(fit_d_gjr,rugarch::likelihood)
+
+t_l<-matrix(c(l1,l2,l3))
+dimnames(t_l) =list(c("ARMA(1,0)-GARCH(1,1) norm",
+                     "ARMA(0,0)-GARCH(1,1) norm",
+                     "ARMA(0,0)-GARCH(1,1) std",
+                     "ARMA(0,0)-GARCH(1,1) ged",
+                     "ARMA(0,0)-GJR-GARCH(1,1) std",
+                     "ARMA(0,0)-GJR-GARCH(1,1) ged"),
+                    c("Likelihood")) 
+
+kable(t_l,caption ='Likelihood')%>%
+  kable_styling()
+```
+
+The likelihood table show evidence that the GJR-GARCH(1,1) has the highest likelihood. Also, if we review the news impact curve we can observed that the log returns of BTCUSD are more sensitive to positive shocks than negatives, that is, good news provoke high volatility.
+
+```{r newsimpact}
+out<-newsimpact(fit_d_gjr[[1]])
+plot(out$zx,out$zy,xlab='prediction error',ylab='predicted variance')
+```
+
+
+
+
+```{r infocriteria}
+criteria_fits<-sapply(fits,infocriteria)
+criteria_fitd<-sapply(fit_d,infocriteria)
+criteria_fit_gjr<-sapply(fit_d_gjr,infocriteria)
+
+table_criteria<-matrix(c(criteria_fits,criteria_fitd,criteria_fit_gjr),nrow=4,ncol=6,byrow=TRUE)
+dimnames(table_criteria) =list(c("Akaike","Bayes","Shibata","Hannan-Quinn"),
+                                 c("ARMA(1,0)-GARCH(1,1) norm",
+                                   "ARMA(0,0)-GARCH(1,1) norm",
+                                   "ARMA(0,0)-GARCH(1,1) std",
+                                   "ARMA(0,0)-GARCH(1,1) ged",
+                                   "ARMA(0,0)-GJR-GARCH(1,1) std",
+                                   "ARMA(0,0)-GJR-GARCH(1,1) ged"))
+
+kable(table_criteria, caption="Information Criteria")%>%
+kable_styling(full_width = F, font_size = 8)
+
+```
+
+
+```{r forecast}
+btc_plot<-timetk::tk_xts(btc%>%select(-`Volume MA`))
+nforecast=5
+
+f_fits_1 <- ugarchforecast(fits[[1]], n.ahead = nforecast)
+f_fits_2 <- ugarchforecast(fits[[2]], n.ahead = nforecast)
+f_fit_d_1 <- ugarchforecast(fit_d[[1]], n.ahead = nforecast)
+f_fit_d_2 <- ugarchforecast(fit_d[[2]], n.ahead = nforecast)
+f_fit_gjr_1 <- ugarchforecast(fit_d_gjr[[1]], n.ahead = nforecast)
+f_fit_gjr_2 <- ugarchforecast(fit_d_gjr[[2]], n.ahead = nforecast)
+
+
+temp <- data.frame(Date = end(btc_plot) + 1:nforecast,
+                   arma_garch_norm = as.numeric(sigma(f_fits_1)),
+                   garch_norm = as.numeric(sigma(f_fits_2)),
+                   garch_std = as.numeric(sigma(f_fit_d_1)),
+                   garch_ged = as.numeric(sigma(f_fit_d_2)),
+                   gjr_garch_std = as.numeric(sigma(f_fit_gjr_1)),
+                   gjr_garch_ged = as.numeric(sigma(f_fit_gjr_2))
+                   )
+ggplot(temp) + geom_line(aes(Date, arma_garch_norm), color="red") +
+  geom_line(aes(Date, garch_norm), color="steelblue2") +
+  geom_line(aes(Date, garch_std), color="green")+
+  geom_line(aes(Date, garch_ged), color="black")+
+  geom_line(aes(Date, gjr_garch_std), color="#FC4E07")+
+  geom_line(aes(Date, gjr_garch_ged), color="#00AFBB")+
+
+  geom_hline(yintercept = sd(btc_plot), color="seagreen4", linetype="dashed") +
+  labs(x=NULL, y=NULL, title="Volatility forecasts",
+       subtitle=paste("Forecast date: ", end(btc_plot))) + theme_bw()+ ylim(.02, .05)+theme(legend.position="bottom")
+
+kable(temp, caption='Forecast BTCUSD 5 steps ahead')%>%
+kable_styling(full_width = F, font_size = 8)
+
+```
+
+
+
+## Conclusions
+
+In conclusion, after studying the bitcoin timeline we can observe that news about the performance of blockchain and the reliability of bitcoin as commodity or investor’s feelings affect the volatility of the crypto currency over time. The model with the best performance was GRJ-GARCH(1,1) with a t-student distribution which captures the shocks provoked for microstructure of the BTCUSD market. Further investigations could include external regressors, for example, the halving day or a proxy variable that captures the investor’s feelings as tweets could improve the forecast of the volatility. 
+
+
+## Annex
+
+### 1. COEFFICIENTS GARCH MODELS
+```{r anexo_coefs, echo=FALSE}
+table3<-as.matrix(fit_d[[1]]@fit$matcoef)
+table4<-as.matrix(fit_d[[2]]@fit$matcoef)
+table5<-as.matrix(fit_d_gjr[[1]]@fit$matcoef)
+table6<-as.matrix(fit_d_gjr[[2]]@fit$matcoef)
+
+kable(table3,caption = "ARMA(0,0)-GARCH(1,1) std")%>%
+  kable_styling(full_width = F, font_size = 8)
+
+kable(table4,caption = "ARMA(0,0)-GARCH(1,1) ged")%>%
+  kable_styling(full_width = F, font_size = 8)
+
+kable(table3,caption = "ARMA(0,0)-GJR-GARCH(1,1) std")%>%
+  kable_styling(full_width = F, font_size = 8)
+
+kable(table3,caption = "ARMA(0,0)-GJR-GARCH(1,1) ged")%>%
+  kable_styling(full_width = F, font_size = 8)
+```
+
+### 2.QQ PLOTS
+```{r anexo_qqplots,echo=FALSE}
+#QQ plots residuals 
+#qq plot and residuals test ARMA(0,0)-GARCH norm
+plot(fits[[2]],which=9)
+
+#qq plot and residuals test ARMA(0,0)-GARCH std
+plot(fit_d[[1]],which=9)
+
+##qq plot and residuals test ARMA(0,0)-GARCH ged
+plot(fit_d[[2]],which=9)
+
+##qq plot and residuals test ARMA(0,0)-GJR std
+plot(fit_d_gjr[[1]],which=9)
+
+##qq plot and residuals test ARMA(0,0)-GJR ged
+plot(fit_d_gjr[[2]],which=9)
+
+```
+
+### 3. Mean Square Error 
+
+```{r}
+#MSE
+e1<-mean((fits[[1]]@fit$residuals)^2)
+e2<-mean((fits[[2]]@fit$residuals)^2)
+e3<-mean((fit_d[[1]]@fit$residuals)^2)
+e4<-mean((fit_d[[2]]@fit$residuals)^2)
+e5<-mean((fit_d_gjr[[1]]@fit$residuals)^2)
+e6<-mean((fit_d_gjr[[2]]@fit$residuals)^2)
+
+d1<-((fits[[1]]@fit$residuals)^2)-(fits[[1]]@fit$sigma)^2
+d1<-mean(d1^2)
+d2<-((fits[[2]]@fit$residuals)^2)-(fits[[2]]@fit$sigma)^2
+d2<-mean(d2^2)
+d3<-((fit_d[[1]]@fit$residuals)^2)-(fit_d[[1]]@fit$sigma)^2
+d3<-mean(d3^2)
+d4<-((fit_d[[2]]@fit$residuals)^2)-(fit_d[[2]]@fit$sigma)^2
+d4<-mean(d4^2)
+d5<-((fit_d_gjr[[1]]@fit$residuals)^2)-(fit_d_gjr[[1]]@fit$sigma)^2
+d5<-mean(d5^2)
+d6<-((fit_d_gjr[[2]]@fit$residuals)^2)-(fit_d_gjr[[2]]@fit$sigma)^2
+d6<-mean(d6^2)
+
+table_errors<-matrix(c(e1,e2,e3,e4,e5,e6,
+                       d1,d2,d3,d4,d5,d6),nrow=2,ncol=6,byrow = TRUE,
+                     dimnames=list( 
+                       c("mean_MSE","var_MSE"),
+                       c("ARMA(1,0)-GARCH(1,1) norm",
+                                      "ARMA(0,0)-GARCH(1,1) norm",
+                                      "ARMA(0,0)-GARCH(1,1) std",
+                                      "ARMA(0,0)-GARCH(1,1) ged",
+                                      "ARMA(0,0)-GJR-GARCH(1,1) std",
+                                      "ARMA(0,0)-GJR-GARCH(1,1) ged"
+                     )))
+
+kable(table_errors,caption='Mean Squared Errors mu and sigma')%>%
+  kable_styling()
+  
+```
+
